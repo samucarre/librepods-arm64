@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=LibrePods
+Comment=AirPods on Linux: noise control modes, ear detection, battery
+Exec=librepods
+Icon=librepods
+Type=Application
+Categories=Utility;Audio;
+StartupNotify=false

@@ -1,0 +1,4 @@
+dist/
+*.tar.gz
+rootfs*/
+__pycache__/

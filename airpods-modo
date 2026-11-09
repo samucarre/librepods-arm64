@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""airpods-modo — AirPods listening mode from the terminal, through LibrePods (Linux, Rust version).
+
+The Rust version of LibrePods has no command-line interface, so this script drives its tray menu over D-Bus
+(StatusNotifierItem + com.canonical.dbusmenu). It works even if your bar has no tray. LibrePods must be running.
+Messages follow your locale (Spanish if LANG starts with "es", English otherwise); commands accept both languages.
+
+Usage / Uso:  airpods-modo [status|estado] [--json]
+              airpods-modo anc | transparency|transparencia | adaptive|adaptativo | off
+              airpods-modo next|siguiente        cycle through the available modes (for a keybinding)
+              airpods-modo conversation|conversacion   toggle Conversation Awareness
+              airpods-modo window|ventana        open the LibrePods window
+              airpods-modo quit|salir            close LibrePods
+--json (with status) prints {"text", "tooltip", "class", "modo", "disponibles", "bateria"} for bars like waybar.
+"""
+import json
+import os
+import re
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+def _locale():
+    """LC_ALL / LC_MESSAGES / LANG; if the session exported none (some greeters do not), the system default
+    from /etc/default/locale (Debian, Ubuntu) or /etc/locale.conf (Fedora, Arch)."""
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        if os.environ.get(var):
+            return os.environ[var]
+    for ruta in ("/etc/default/locale", "/etc/locale.conf"):
+        try:
+            with open(ruta) as f:
+                for linea in f:
+                    if linea.startswith(("LANG=", "LC_MESSAGES=", "LC_ALL=")):
+                        return linea.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+    return ""
+
+
+ES = _locale().lower().startswith("es")
+
+
+def t(es, en):
+    return es if ES else en
+
+
+# LibrePods menu label (English, upstream) -> (canonical key, Spanish name, English name, accepted aliases)
+MODOS = {
+    "Off": ("off", "apagado", "off", {"off", "apagado", "ninguno", "nada", "none"}),
+    "Noise Cancellation": ("anc", "cancelación de ruido", "noise cancellation",
+                           {"anc", "nc", "cancelacion", "cancelación", "ruido", "noise", "noise-cancellation", "cancellation"}),
+    "Transparency": ("transparencia", "transparencia", "transparency", {"transparencia", "transp", "ambiente", "transparency", "ambient"}),
+    "Adaptive": ("adaptativo", "adaptativo", "adaptive", {"adaptativo", "adapt", "adaptive"}),
+}
+ORDENES = {
+    "estado": {"estado", "status", "state"},
+    "siguiente": {"siguiente", "next", "ciclo", "cycle"},
+    "conversacion": {"conversacion", "conversación", "conv", "conversation", "awareness"},
+    "ventana": {"ventana", "window", "show", "open"},
+    "salir": {"salir", "quit", "exit"},
+}
+SNI = "org.kde.StatusNotifierItem"
+MENU = "com.canonical.dbusmenu"
+
+
+def nombre(etiqueta):
+    m = MODOS[etiqueta]
+    return m[1] if ES else m[2]
+
+
+def llamar(bus, destino, ruta, iface, metodo, params, firma_respuesta):
+    return bus.call_sync(destino, ruta, iface, metodo, params,
+                         GLib.VariantType(firma_respuesta) if firma_respuesta else None,
+                         Gio.DBusCallFlags.NONE, 3000, None)
+
+
+def propiedad(bus, destino, ruta, iface, nombre_prop):
+    r = llamar(bus, destino, ruta, "org.freedesktop.DBus.Properties", "Get",
+               GLib.Variant("(ss)", (iface, nombre_prop)), "(v)")
+    return r.get_child_value(0).get_variant().unpack()
+
+
+def servicio_librepods(bus):
+    """Session-bus name of the LibrePods tray item: org.kde.StatusNotifierItem-<pid>-<n> whose pid is `librepods`."""
+    nombres = llamar(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                     "ListNames", None, "(as)").unpack()[0]
+    for n in nombres:
+        m = re.match(r"org\.kde\.StatusNotifierItem-(\d+)-\d+$", n)
+        if not m:
+            continue
+        try:
+            with open(f"/proc/{m.group(1)}/comm") as f:
+                comm = f.read().strip()
+        except OSError:
+            continue
+        if comm == "librepods":
+            return n
+    return None
+
+
+def elementos_menu(bus, servicio, ruta_menu):
+    props = ["label", "toggle-type", "toggle-state", "enabled", "visible"]
+    r = llamar(bus, servicio, ruta_menu, MENU, "GetLayout", GLib.Variant("(iias)", (0, -1, props)), "(u(ia{sv}av))")
+    _, raiz = r.unpack()
+    planos = []
+
+    def recorrer(nodo):
+        ident, prop, hijos = nodo
+        if "label" in prop:
+            planos.append({"id": ident, "label": prop["label"].replace("_", ""),
+                           "toggle": prop.get("toggle-type", ""), "estado": prop.get("toggle-state", -1),
+                           "enabled": prop.get("enabled", True)})
+        for h in hijos:
+            recorrer(h)
+
+    recorrer(raiz)
+    return planos
+
+
+def pulsar(bus, servicio, ruta_menu, ident):
+    llamar(bus, servicio, ruta_menu, MENU, "Event",
+           GLib.Variant("(isvu)", (ident, "clicked", GLib.Variant("i", 0), 0)), None)
+
+
+def main(argv):
+    palabra = (argv[1] if len(argv) > 1 and not argv[1].startswith("--") else "estado").lower()
+    como_json = "--json" in argv
+    if palabra in ("-h", "--help", "ayuda", "help"):
+        print(__doc__.strip())
+        return 0
+    orden = next((k for k, alias in ORDENES.items() if palabra in alias), None)
+    etiqueta = None if orden else next((e for e, m in MODOS.items() if palabra in m[3]), None)
+    if not orden and not etiqueta:
+        print(t(f"Orden desconocida: {palabra}", f"Unknown command: {palabra}") + "\n\n" + __doc__.strip(), file=sys.stderr)
+        return 2
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    servicio = servicio_librepods(bus)
+    if not servicio:
+        if como_json:
+            print(json.dumps({"text": "", "tooltip": t("LibrePods no está en marcha", "LibrePods is not running"),
+                              "class": "apagado", "modo": None, "disponibles": [], "bateria": ""}))
+            return 0
+        print(t("LibrePods no está en marcha (arráncalo con: librepods --start-minimized)",
+                "LibrePods is not running (start it with: librepods --start-minimized)"), file=sys.stderr)
+        return 2
+    ruta_menu = propiedad(bus, servicio, "/StatusNotifierItem", SNI, "Menu")
+    items = elementos_menu(bus, servicio, ruta_menu)
+    radios = [i for i in items if i["toggle"] == "radio" and i["label"] in MODOS]
+    actual = next((i for i in radios if i["estado"] == 1), None)
+    conv = next((i for i in items if i["label"] == "Conversation Detection"), None)
+
+    def bateria():
+        try:
+            _icono, _pix, _titulo, desc = propiedad(bus, servicio, "/StatusNotifierItem", SNI, "ToolTip")
+            return desc.strip()
+        except Exception:
+            return ""
+
+    if orden == "estado":
+        bat = bateria()
+        if como_json:
+            print(json.dumps({"text": nombre(actual["label"]) if actual else "",
+                              "tooltip": (f"AirPods: {nombre(actual['label'])}" if actual else t("AirPods sin conectar", "AirPods not connected"))
+                              + (f"\n{bat}" if bat else ""),
+                              "class": actual["label"].lower().replace(" ", "-") if actual else "desconectado",
+                              "modo": MODOS[actual["label"]][0] if actual else None,
+                              "disponibles": [MODOS[i["label"]][0] for i in radios], "bateria": bat}, ensure_ascii=False))
+            return 0
+        if not actual:
+            print(t("Modo: desconocido (¿AirPods conectados?)", "Mode: unknown (AirPods connected?)") + (f" · {bat}" if bat else ""))
+            return 1
+        conv_txt = ""
+        if conv and conv["enabled"]:
+            conv_txt = " · " + t("Conversación: ", "Conversation: ") + (t("sí", "on") if conv["estado"] == 1 else t("no", "off"))
+        print(t("Modo: ", "Mode: ") + nombre(actual["label"]) + conv_txt + (f" · {bat}" if bat else ""))
+        return 0
+
+    if orden == "ventana":
+        objetivo = next((i for i in items if i["label"] == "Open Window"), None)
+    elif orden == "salir":
+        objetivo = next((i for i in items if i["label"] == "Exit"), None)
+    elif orden == "conversacion":
+        objetivo = conv
+        if objetivo and not objetivo["enabled"]:
+            print(t("La detección de conversación no está disponible ahora (¿AirPods conectados?)",
+                    "Conversation Awareness is not available right now (AirPods connected?)"), file=sys.stderr)
+            return 1
+    elif orden == "siguiente":
+        if not radios:
+            print(t("No hay modos en el menú (¿AirPods conectados?)", "No modes in the menu (AirPods connected?)"), file=sys.stderr)
+            return 1
+        pos = next((k for k, i in enumerate(radios) if i["estado"] == 1), -1)
+        objetivo = radios[(pos + 1) % len(radios)]
+    else:
+        objetivo = next((i for i in radios if i["label"] == etiqueta), None)
+        if not objetivo:
+            disponibles = ", ".join(nombre(i["label"]) for i in radios) or t("ninguno", "none")
+            print(t(f"El modo «{nombre(etiqueta)}» no está en el menú (disponibles: {disponibles})",
+                    f"Mode '{nombre(etiqueta)}' is not in the menu (available: {disponibles})"), file=sys.stderr)
+            return 1
+    if not objetivo:
+        print(t("No encuentro esa entrada en el menú de LibrePods", "That entry is not in the LibrePods menu"), file=sys.stderr)
+        return 1
+    pulsar(bus, servicio, ruta_menu, objetivo["id"])
+    if objetivo["label"] in MODOS:
+        print(t("Modo: ", "Mode: ") + nombre(objetivo["label"]))
+    elif objetivo is conv:
+        print(t("Detección de conversación: ", "Conversation Awareness: ")
+              + (t("desactivada", "off") if conv["estado"] == 1 else t("activada", "on")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
