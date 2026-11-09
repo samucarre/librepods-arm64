@@ -36,8 +36,8 @@ airpods-modo estado
 
 `install.sh` deja `librepods` y `airpods-modo` en `~/.local/bin`, más el lanzador `.desktop` y el icono en `~/.local/share`. Sin root.
 
-**Requisitos:** glibc ≥ 2.36 (los binarios se compilan dentro de Debian 12, así que valen en Debian 12+, Ubuntu 24.04+,
-Fedora 38+ y Asahi Fedora), `libpulse0` y `libdbus-1-3` (nombres de Debian/Ubuntu; la biblioteca cliente de PulseAudio
+**Requisitos:** glibc ≥ 2.35 (los binarios se compilan dentro de Debian 12, así que valen en Debian 12+, Ubuntu 22.04+,
+Fedora 36+ y Asahi Fedora), `libpulse0` y `libdbus-1-3` (nombres de Debian/Ubuntu; la biblioteca cliente de PulseAudio
 también habla con PipeWire), BlueZ, PipeWire o PulseAudio. `airpods-modo` necesita Python 3 con PyGObject (`python3-gi`).
 Una bandeja StatusNotifier/AppIndicator (`tray` de waybar, KDE, GNOME con la extensión AppIndicator) enseña el icono con
 la batería y un menú; sin bandeja, usa la ventana (`librepods`) o `airpods-modo`.
@@ -79,7 +79,7 @@ Ejemplo de módulo para waybar:
 `build.sh` fija el commit de upstream que se probó (rama `linux/rust`, ver el script); `COMMIT=HEAD ./build.sh` compila la
 punta de la rama. Otras distros: instala `pkg-config`, las cabeceras de desarrollo de D-Bus y PulseAudio y Rust ≥ 1.85, y lánzalo.
 `build-portable.sh` es como se hacen los binarios de las releases: una raíz Debian 12 con `debootstrap` + `systemd-nspawn`,
-para que el resultado solo pida glibc 2.36.
+para que el resultado solo pida glibc 2.35.
 
 ## Cosas aprendidas por el camino
 

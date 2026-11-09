@@ -1,7 +1,7 @@
 #!/bin/bash
-# build-portable.sh — build a PORTABLE binary inside a minimal Debian 12 (bookworm, glibc 2.36) root created with
+# build-portable.sh — build a PORTABLE binary inside a minimal Debian 12 (bookworm) root created with
 # debootstrap and entered with systemd-nspawn, so the result also runs on older distributions (Debian 12+,
-# Ubuntu 24.04+, Fedora 38+, Asahi Fedora…). A binary built directly on a new distro only runs on that glibc or newer.
+# Ubuntu 22.04+, Fedora 36+, Asahi Fedora…: it needs only glibc 2.35). A binary built directly on a new distro only runs on that glibc or newer.
 # This is how the release binaries of this repo are made. Needs sudo (debootstrap and nspawn run as root).
 #   ./build-portable.sh [rootfs-dir]      → dist/librepods-<arch>-linux-gnu
 # Env: ROOTFS, SUITE, UPSTREAM, BRANCH, COMMIT, OUT, JOBS
